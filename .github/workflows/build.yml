@@ -1,0 +1,66 @@
+name: Build & Release
+on:
+  push:
+    branches: [ main, master ]
+    tags:     [ 'v*' ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unzip & replace source if zip present
+        run: |
+          ZIP=$(ls *.zip 2>/dev/null | head -1)
+          if [ -n "$ZIP" ]; then
+            rm -rf src .github build.gradle gradle.properties settings.gradle README.md
+            unzip "$ZIP"
+            FOLDER=$(unzip -Z1 "$ZIP" | head -1 | cut -d/ -f1)
+            cp -r "$FOLDER/." .
+            rm -rf "$FOLDER" "$ZIP"
+          fi
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-v2-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+      - name: Build
+        run: |
+          if [ ! -f gradlew ]; then
+            wget -q https://services.gradle.org/distributions/gradle-8.8-bin.zip -O /tmp/gradle.zip
+            unzip -q /tmp/gradle.zip -d /opt/gradle
+            export PATH="/opt/gradle/gradle-8.8/bin:$PATH"
+            gradle wrapper --gradle-version 8.8
+          fi
+          chmod +x gradlew
+          SUCCESS=false
+          for i in 1 2 3; do
+            if ./gradlew build --no-daemon --max-workers 2 --refresh-dependencies; then
+              SUCCESS=true
+              break
+            fi
+            echo "Retry $i failed, waiting 60s..."
+            sleep 60
+          done
+          if [ "$SUCCESS" != "true" ]; then
+            echo "Build failed after 3 attempts"
+            exit 1
+          fi
+          echo "=== build/libs ==="
+          ls -la build/libs/
+      - name: Upload JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: mod-${{ github.sha }}
+          path: |
+            build/libs/*.jar
+            !build/libs/*-dev.jar
+            !build/libs/*-sources.jar
+          if-no-files-found: error
+          retention-days: 30
